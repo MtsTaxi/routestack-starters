@@ -33,6 +33,7 @@ pnpm start
 | [price-drop-cron](typescript/price-drop-cron/) | Cloudflare Worker cron for price alerts |
 | [corp-approval-flow](typescript/corp-approval-flow/) | Corporate travel approval via Deep Links |
 | [rag-travel-profile](typescript/rag-travel-profile/) | Personalized search with vector DB |
+| [php-bridge](typescript/php-bridge/) | Private Node.js bridge for PHP websites (hotel, flight, car hire) |
 
 ### Python / Go / Rust
 

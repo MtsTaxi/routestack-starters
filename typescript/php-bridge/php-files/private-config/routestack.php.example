@@ -1,0 +1,14 @@
+<?php
+/**
+ * Private configuration template — copy to:
+ *   /home/<cpanel-user>/private-config/routestack.php
+ *
+ * This file MUST live ABOVE public_html so it is never web-accessible.
+ * Permission: 600 (chmod 600 routestack.php)
+ *
+ * Set BRIDGE_SECRET to the same value as in ~/routestack-bridge/.env
+ */
+
+define('BRIDGE_HOST',   '127.0.0.1');
+define('BRIDGE_PORT',   3001);
+define('BRIDGE_SECRET', 'replace-with-the-same-value-as-in-dotenv');
