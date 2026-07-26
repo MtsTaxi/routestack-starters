@@ -38,7 +38,7 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../../lib/bridge-client.php';
+require_once __DIR__ . '/lib/bridge-client.php';
 
 rs_bootstrap();
 
