@@ -52,8 +52,8 @@ if (!is_array($body)) {
 $hotelId       = rs_string($body['hotelId']       ?? '');
 $token         = rs_string($body['token']         ?? '');
 $correlationId = rs_string($body['correlationId'] ?? '');
-$checkIn       = rs_date($body['checkIn']         ?? '');
-$checkOut      = rs_date($body['checkOut']        ?? '');
+$checkIn       = rs_date($body['checkIn']  ?? $body['checkin']  ?? '');
+$checkOut      = rs_date($body['checkOut'] ?? $body['checkout'] ?? '');
 $adults        = rs_int($body['adults']           ?? 1, 1);
 $children      = rs_int($body['children']         ?? 0, 0);
 $childAges     = rs_child_ages($body['childAges'] ?? null, $children);

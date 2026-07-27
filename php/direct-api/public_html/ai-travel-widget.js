@@ -265,7 +265,7 @@ function renderHotelResults(container, hotels, checkin, checkout, adults, childr
     <div class="hotel-card">
       <div class="hotel-card-info">
         <h3>${escHtml(h.hotelName ?? h.name ?? 'Hotel')}</h3>
-        <div class="stars">${stars(h.stars ?? h.rating ?? 0)}</div>
+        <div class="stars">${stars(h.starRating ?? h.stars ?? h.rating ?? 0)}</div>
         <div class="address">${escHtml(h.address ?? h.location ?? '')}</div>
       </div>
       <div class="hotel-card-price">

@@ -49,8 +49,8 @@ if (!is_array($body)) {
 
 // Validate and sanitise inputs
 $destinationId = rs_string($body['destinationId'] ?? '');
-$checkIn       = rs_date($body['checkIn']        ?? '');
-$checkOut      = rs_date($body['checkOut']       ?? '');
+$checkIn       = rs_date($body['checkIn']   ?? $body['checkin']  ?? '');
+$checkOut      = rs_date($body['checkOut']  ?? $body['checkout'] ?? '');
 $adults        = rs_int($body['adults']          ?? 1, 1);
 $children      = rs_int($body['children']        ?? 0, 0);
 $childAges     = rs_child_ages($body['childAges'] ?? null, $children);
