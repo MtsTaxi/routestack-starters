@@ -1,0 +1,25 @@
+<?php
+/**
+ * RouteStack private configuration
+ *
+ * Deploy to:   /home/<cpanel-user>/routestack_private/config.php
+ * Permission:  chmod 600 ~/routestack_private/config.php
+ *
+ * This file MUST live ABOVE public_html so it is never web-accessible.
+ * Never commit this file with real credentials.
+ */
+
+// RouteStack MCP base URL (no trailing slash)
+define('RS_BASE_URL',   'https://mcp.routestack.ai');
+
+// Credentials — obtain from https://routestack.ai
+define('RS_API_KEY',    'your-api-key-here');
+define('RS_API_SECRET', 'your-api-secret-here');
+
+// File-based JWT cache — must be writable and outside public_html
+// The token is refreshed automatically when it expires.
+define('RS_TOKEN_CACHE_FILE', __DIR__ . '/.token_cache.json');
+
+// cURL timeouts in seconds
+define('RS_CONNECT_TIMEOUT', 5);
+define('RS_TIMEOUT',         30);

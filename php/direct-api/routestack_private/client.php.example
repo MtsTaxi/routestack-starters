@@ -1,0 +1,333 @@
+<?php
+/**
+ * RouteStack PHP client — direct MCP Streamable HTTP integration
+ *
+ * Deploy to:   /home/<cpanel-user>/routestack_private/client.php
+ * Permission:  chmod 600 ~/routestack_private/client.php
+ *
+ * Implements:
+ *   • HMAC-SHA256 partner-token authentication (POST /mcp/auth/partner-token)
+ *   • File-based JWT caching with automatic refresh
+ *   • MCP Streamable HTTP tool calls (POST /mcp, JSON-RPC 2.0)
+ *   • SSE response parsing fallback
+ *   • Single automatic retry on HTTP 401 (token rotation)
+ *   • tools/list for dynamic car-hire tool discovery
+ *
+ * Public API:
+ *   rs_call_tool(string $tool, array $args, int $timeout = 25): array
+ *   rs_list_tools(): array
+ */
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/config.php';
+
+// ---------------------------------------------------------------------------
+// HMAC partner-token authentication
+// ---------------------------------------------------------------------------
+
+/**
+ * Return a valid JWT for the RouteStack API, refreshing from the server when
+ * the cached token is missing or within 60 seconds of expiry.
+ *
+ * @throws RuntimeException on network or authentication failure
+ */
+function rs_get_partner_token(): string
+{
+    $cacheFile = RS_TOKEN_CACHE_FILE;
+
+    // Try cached token
+    if (is_readable($cacheFile)) {
+        $cached = @json_decode((string)file_get_contents($cacheFile), true);
+        if (
+            is_array($cached)
+            && isset($cached['token'], $cached['expires_at'])
+            && time() < (int)$cached['expires_at'] - 60
+        ) {
+            return (string)$cached['token'];
+        }
+    }
+
+    // Build HMAC signature: base64url(HMAC-SHA256(apiKey:timestamp:nonce, secret))
+    $ts    = time();
+    $nonce = bin2hex(random_bytes(16));
+    $raw   = hash_hmac('sha256', RS_API_KEY . ':' . $ts . ':' . $nonce, RS_API_SECRET, true);
+    $hmac  = rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+
+    $payload = (string)json_encode([
+        'apiKey'    => RS_API_KEY,
+        'hmac'      => $hmac,
+        'timestamp' => $ts,
+        'nonce'     => $nonce,
+    ]);
+
+    $ch = curl_init(RS_BASE_URL . '/mcp/auth/partner-token');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Content-Length: ' . strlen($payload),
+        ],
+        CURLOPT_CONNECTTIMEOUT => RS_CONNECT_TIMEOUT,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+
+    $res    = curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err    = curl_error($ch);
+    curl_close($ch);
+
+    if ($res === false) {
+        throw new RuntimeException('Token request cURL error: ' . $err);
+    }
+    if ($status !== 200) {
+        throw new RuntimeException(
+            'Token request failed HTTP ' . $status . ': ' . substr((string)$res, 0, 300)
+        );
+    }
+
+    $data = json_decode((string)$res, true);
+    if (!is_array($data)) {
+        throw new RuntimeException('Token response was not JSON');
+    }
+
+    $token = $data['token']       ??
+             $data['accessToken'] ??
+             $data['partnerToken'] ??
+             $data['jwt']          ?? null;
+
+    if (!is_string($token) || $token === '') {
+        throw new RuntimeException('Token response missing token field: ' . substr((string)$res, 0, 300));
+    }
+
+    // Parse JWT expiry from payload, default to 55 minutes from now
+    $expiresAt = time() + 3300;
+    if (preg_match('/^[^.]+\.([^.]+)\.[^.]+$/', $token, $m)) {
+        $pad     = str_pad(strtr($m[1], '-_', '+/'), (int)ceil(strlen($m[1]) / 4) * 4, '=');
+        $claims  = @json_decode(base64_decode($pad), true);
+        if (isset($claims['exp'])) {
+            $expiresAt = (int)$claims['exp'];
+        }
+    }
+
+    // Write cache atomically
+    $dir = dirname($cacheFile);
+    if (!is_dir($dir)) {
+        mkdir($dir, 0700, true);
+    }
+    $tmp = $cacheFile . '.tmp.' . getmypid();
+    file_put_contents($tmp, (string)json_encode([
+        'token'      => $token,
+        'expires_at' => $expiresAt,
+    ]), LOCK_EX);
+    rename($tmp, $cacheFile);
+
+    return $token;
+}
+
+// ---------------------------------------------------------------------------
+// MCP Streamable HTTP tool call
+// ---------------------------------------------------------------------------
+
+/**
+ * Call a RouteStack MCP tool and return the parsed result array.
+ *
+ * The function retries once automatically if the server returns HTTP 401
+ * (expired token) by clearing the cache and fetching a fresh token.
+ *
+ * @param  string $tool     MCP tool name, e.g. 'hotel_search'
+ * @param  array  $args     Tool arguments
+ * @param  int    $timeout  Overall cURL timeout in seconds
+ * @return array            Parsed inner result (the JSON from the MCP content item)
+ * @throws RuntimeException on network, auth, or protocol errors
+ */
+function rs_call_tool(string $tool, array $args, int $timeout = 25, bool $_retried = false): array
+{
+    $token   = rs_get_partner_token();
+    $reqId   = uniqid('rs_', true);
+    $payload = (string)json_encode([
+        'jsonrpc' => '2.0',
+        'id'      => $reqId,
+        'method'  => 'tools/call',
+        'params'  => [
+            'name'      => $tool,
+            'arguments' => $args,
+        ],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    $ch = curl_init(RS_BASE_URL . '/mcp');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $token,
+            'Accept: application/json, text/event-stream',
+            'Content-Length: ' . strlen($payload),
+        ],
+        CURLOPT_CONNECTTIMEOUT => RS_CONNECT_TIMEOUT,
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+
+    $body      = curl_exec($ch);
+    $httpCode  = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErrNo = curl_errno($ch);
+    $curlErr   = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlErrNo !== 0) {
+        $msg = ($curlErrNo === CURLE_OPERATION_TIMEOUTED)
+            ? 'RouteStack request timed out after ' . $timeout . ' seconds.'
+            : 'RouteStack connection error: ' . $curlErr;
+        throw new RuntimeException($msg);
+    }
+
+    // Expired token — clear cache and retry once
+    if ($httpCode === 401 && !$_retried) {
+        @unlink(RS_TOKEN_CACHE_FILE);
+        return rs_call_tool($tool, $args, $timeout, true);
+    }
+
+    if ($httpCode >= 500) {
+        throw new RuntimeException('RouteStack returned HTTP ' . $httpCode . ' (server error)');
+    }
+    if ($httpCode >= 400) {
+        throw new RuntimeException('RouteStack returned HTTP ' . $httpCode . ': ' . substr((string)$body, 0, 200));
+    }
+
+    $rpc = _rs_parse_mcp_response((string)$body);
+
+    if (isset($rpc['error'])) {
+        $msg = $rpc['error']['message'] ?? json_encode($rpc['error']);
+        throw new RuntimeException('MCP error: ' . $msg);
+    }
+
+    $isError = (bool)($rpc['result']['isError'] ?? false);
+    $content = $rpc['result']['content'] ?? [];
+
+    foreach ($content as $item) {
+        if (($item['type'] ?? '') === 'text' && is_string($item['text'] ?? null)) {
+            $inner = json_decode((string)$item['text'], true);
+            if (is_array($inner)) {
+                if ($isError) {
+                    throw new RuntimeException(
+                        'RouteStack tool error: ' . ($inner['message'] ?? $item['text'])
+                    );
+                }
+                return $inner;
+            }
+        }
+    }
+
+    throw new RuntimeException('RouteStack response contained no parseable JSON content');
+}
+
+// ---------------------------------------------------------------------------
+// tools/list — for dynamic tool discovery (car hire)
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the list of available MCP tools from RouteStack.
+ * Result is cached in the PHP session to avoid repeated network calls.
+ *
+ * @return array<int, array{name: string, description: string}>
+ * @throws RuntimeException
+ */
+function rs_list_tools(): array
+{
+    // Check session cache first
+    if (isset($_SESSION['_rs_tools_cache']) && is_array($_SESSION['_rs_tools_cache'])) {
+        return $_SESSION['_rs_tools_cache'];
+    }
+
+    $token   = rs_get_partner_token();
+    $reqId   = uniqid('rs_list_', true);
+    $payload = (string)json_encode([
+        'jsonrpc' => '2.0',
+        'id'      => $reqId,
+        'method'  => 'tools/list',
+        'params'  => [],
+    ]);
+
+    $ch = curl_init(RS_BASE_URL . '/mcp');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $token,
+            'Accept: application/json, text/event-stream',
+            'Content-Length: ' . strlen($payload),
+        ],
+        CURLOPT_CONNECTTIMEOUT => RS_CONNECT_TIMEOUT,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ]);
+
+    $body     = curl_exec($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err      = curl_error($ch);
+    curl_close($ch);
+
+    if ($body === false) {
+        throw new RuntimeException('tools/list cURL error: ' . $err);
+    }
+    if ($httpCode !== 200) {
+        throw new RuntimeException('tools/list failed HTTP ' . $httpCode);
+    }
+
+    $rpc   = _rs_parse_mcp_response((string)$body);
+    $tools = $rpc['result']['tools'] ?? [];
+
+    // Normalise to [{name, description}]
+    $list = array_map(fn($t) => [
+        'name'        => (string)($t['name'] ?? ''),
+        'description' => (string)($t['description'] ?? ''),
+    ], (array)$tools);
+
+    // Cache in session for the lifetime of this browser request
+    $_SESSION['_rs_tools_cache'] = $list;
+
+    return $list;
+}
+
+// ---------------------------------------------------------------------------
+// Internal: parse MCP Streamable HTTP / SSE response
+// ---------------------------------------------------------------------------
+
+/**
+ * @internal
+ * @throws RuntimeException
+ */
+function _rs_parse_mcp_response(string $body): array
+{
+    $body = trim($body);
+
+    // Plain JSON
+    $data = json_decode($body, true);
+    if (is_array($data)) {
+        return $data;
+    }
+
+    // SSE envelope: lines starting with "data: "
+    foreach (explode("\n", $body) as $line) {
+        $line = trim($line);
+        if (str_starts_with($line, 'data: ')) {
+            $data = json_decode(substr($line, 6), true);
+            if (is_array($data)) {
+                return $data;
+            }
+        }
+    }
+
+    throw new RuntimeException('Could not parse MCP response: ' . substr($body, 0, 300));
+}

@@ -1,0 +1,22 @@
+# Allow POST (and OPTIONS for CORS preflight); deny all other methods.
+<LimitExcept POST OPTIONS>
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order deny,allow
+        Deny from all
+    </IfModule>
+</LimitExcept>
+
+# Disable directory listing
+Options -Indexes
+
+# Keep PHP error output out of JSON responses
+php_flag display_errors Off
+php_flag log_errors     On
+
+# Security headers on every response
+Header always set X-Content-Type-Options "nosniff"
+Header always set X-Frame-Options        "DENY"
+Header always set Referrer-Policy        "strict-origin-when-cross-origin"

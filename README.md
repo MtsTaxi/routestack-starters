@@ -35,6 +35,12 @@ pnpm start
 | [rag-travel-profile](typescript/rag-travel-profile/) | Personalized search with vector DB |
 | [php-bridge](typescript/php-bridge/) | Private Node.js bridge for PHP websites (hotel, flight, car hire) |
 
+### PHP (no Node.js required)
+
+| Starter | Description |
+|:--------|:------------|
+| [direct-api](php/direct-api/) | Pure-PHP hotel · flight · car hire booking widget using RouteStack's Streamable HTTP MCP endpoint. HMAC auth, CSRF, rate-limiting, child-age support. Ideal for cPanel/Apache hosting. |
+
 ### Python / Go / Rust
 
 Coming soon. See the [language matrix](../docs/starter-code-guide.md) for planned coverage.
