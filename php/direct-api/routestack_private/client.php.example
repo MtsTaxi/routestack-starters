@@ -195,11 +195,10 @@ function rs_call_tool(string $tool, array $args, int $timeout = 25, bool $_retri
         return rs_call_tool($tool, $args, $timeout, true);
     }
 
-    if ($httpCode >= 500) {
-        throw new RuntimeException('RouteStack returned HTTP ' . $httpCode . ' (server error)');
-    }
     if ($httpCode >= 400) {
-        throw new RuntimeException('RouteStack returned HTTP ' . $httpCode . ': ' . substr((string)$body, 0, 200));
+        throw new RuntimeException(
+            'RouteStack returned HTTP ' . $httpCode . ': ' . substr((string)$body, 0, 300)
+        );
     }
 
     $rpc = _rs_parse_mcp_response((string)$body);
@@ -282,7 +281,7 @@ function rs_list_tools(): array
         throw new RuntimeException('tools/list cURL error: ' . $err);
     }
     if ($httpCode !== 200) {
-        throw new RuntimeException('tools/list failed HTTP ' . $httpCode);
+        throw new RuntimeException('tools/list failed HTTP ' . $httpCode . ': ' . substr((string)$body, 0, 300));
     }
 
     $rpc   = _rs_parse_mcp_response((string)$body);

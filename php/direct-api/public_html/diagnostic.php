@@ -121,6 +121,121 @@ if ($configOk && $clientOk) {
             }
         }
 
+        // Live HMAC auth test — only run when credentials look real
+        if ($baseUrl && $apiKeyDefined && $secretDefined) {
+            try {
+                require_once $clientFile;
+
+                $ts    = time();
+                $nonce = bin2hex(random_bytes(16));
+                $raw   = hash_hmac('sha256', RS_API_KEY . ':' . $ts . ':' . $nonce, RS_API_SECRET, true);
+                $hmac  = rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+
+                $authPayload = (string)json_encode([
+                    'apiKey'    => RS_API_KEY,
+                    'hmac'      => $hmac,
+                    'timestamp' => $ts,
+                    'nonce'     => $nonce,
+                ]);
+
+                $ch = curl_init($baseUrl . '/mcp/auth/partner-token');
+                curl_setopt_array($ch, [
+                    CURLOPT_POST           => true,
+                    CURLOPT_POSTFIELDS     => $authPayload,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_HTTPHEADER     => [
+                        'Content-Type: application/json',
+                        'Content-Length: ' . strlen($authPayload),
+                    ],
+                    CURLOPT_CONNECTTIMEOUT => 5,
+                    CURLOPT_TIMEOUT        => 10,
+                    CURLOPT_SSL_VERIFYPEER => true,
+                    CURLOPT_SSL_VERIFYHOST => 2,
+                ]);
+                $authRes    = curl_exec($ch);
+                $authCode   = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $authCurlErr = curl_error($ch);
+                curl_close($ch);
+
+                if ($authRes === false) {
+                    $rows .= row('HMAC auth endpoint reachable', false, 'cURL: ' . $authCurlErr);
+                } elseif ($authCode === 200) {
+                    $authData = json_decode((string)$authRes, true);
+                    $hasToken = is_array($authData) && (
+                        isset($authData['token']) || isset($authData['accessToken']) ||
+                        isset($authData['partnerToken']) || isset($authData['jwt'])
+                    );
+                    $rows .= row('HMAC auth → HTTP 200', true, $hasToken ? 'JWT received ✓' : 'Warning: response missing token field');
+                } else {
+                    $snippet = substr((string)$authRes, 0, 300);
+                    $rows .= row('HMAC auth → HTTP ' . $authCode, false, $snippet);
+                }
+
+                // Live MCP tools/list test (uses partner token if auth succeeded)
+                if ($authCode === 200) {
+                    try {
+                        $token = rs_get_partner_token();
+                        $listId = uniqid('diag_', true);
+                        $listPayload = (string)json_encode([
+                            'jsonrpc' => '2.0',
+                            'id'      => $listId,
+                            'method'  => 'tools/list',
+                            'params'  => [],
+                        ]);
+                        $ch2 = curl_init($baseUrl . '/mcp');
+                        curl_setopt_array($ch2, [
+                            CURLOPT_POST           => true,
+                            CURLOPT_POSTFIELDS     => $listPayload,
+                            CURLOPT_RETURNTRANSFER => true,
+                            CURLOPT_HTTPHEADER     => [
+                                'Content-Type: application/json',
+                                'Authorization: Bearer ' . $token,
+                                'Accept: application/json, text/event-stream',
+                                'Content-Length: ' . strlen($listPayload),
+                            ],
+                            CURLOPT_CONNECTTIMEOUT => 5,
+                            CURLOPT_TIMEOUT        => 15,
+                            CURLOPT_SSL_VERIFYPEER => true,
+                            CURLOPT_SSL_VERIFYHOST => 2,
+                        ]);
+                        $listRes  = curl_exec($ch2);
+                        $listCode = (int)curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+                        $listErr  = curl_error($ch2);
+                        curl_close($ch2);
+
+                        if ($listRes === false) {
+                            $rows .= row('MCP tools/list reachable', false, 'cURL: ' . $listErr);
+                        } elseif ($listCode === 200) {
+                            // Parse JSON or SSE
+                            $listBody = trim((string)$listRes);
+                            $listData = json_decode($listBody, true);
+                            if (!is_array($listData)) {
+                                foreach (explode("\n", $listBody) as $line) {
+                                    $line = trim($line);
+                                    if (str_starts_with($line, 'data: ')) {
+                                        $listData = json_decode(substr($line, 6), true);
+                                        if (is_array($listData)) break;
+                                    }
+                                }
+                            }
+                            $toolCount = count($listData['result']['tools'] ?? []);
+                            $rows .= row('MCP tools/list → HTTP 200', true, $toolCount . ' tool' . ($toolCount !== 1 ? 's' : '') . ' available');
+                        } else {
+                            $snippet = substr((string)$listRes, 0, 300);
+                            $rows .= row('MCP tools/list → HTTP ' . $listCode, false, $snippet);
+                        }
+                    } catch (Throwable $te) {
+                        $rows .= row('MCP tools/list', false, $te->getMessage());
+                    }
+                }
+
+            } catch (Throwable $te) {
+                $rows .= row('Live API test', false, $te->getMessage());
+            }
+        } else {
+            $rows .= rowInfo('Live API test skipped', 'Credentials are placeholders — fill in config.php first');
+        }
+
     } catch (Throwable $t) {
         $rows .= row('config.php loadable', false, $t->getMessage());
     }
